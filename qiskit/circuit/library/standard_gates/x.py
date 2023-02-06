@@ -1048,20 +1048,17 @@ class MCXNoAncilla(MCXGate):
 
         q = QuantumRegister(self.num_qubits, name="q")
 
-        if (self.num_qubits-1)<6:
+        if (self.num_qubits - 1) < 6:
             qc = QuantumCircuit(q, name=self.name)
-            diag_circuit = QuantumCircuit(q)
-            diag = [1]*(2**self.num_qubits)
-            diag[-1]=-1
-            diag_circuit.H(q[-1])
-            diag_circuit.diagonal(diag, q)
-            diag_circuit.H(q[-1])
-            mc_X_gate = diag_circuit.to_gate()
-            qc._append(mc_X_gate, q)
+            diag = [1] * (2**self.num_qubits)
+            diag[-1] = -1
+            qc.h(q[-1])
+            qc.diagonal(diag, q)
+            qc.h(q[-1])
         else:
-            qc = multiconrol_single_qubit_gate(XGate().__array__(), 
-                                    list(range(self.num_qubits-1)), 
-                                    self.num_qubits-1)
+            qc = multiconrol_single_qubit_gate(
+                XGate().__array__(), list(range(self.num_qubits - 1)), self.num_qubits - 1
+            )
             qc.name = self.name
 
         self.definition = qc

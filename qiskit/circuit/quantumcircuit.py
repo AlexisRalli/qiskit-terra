@@ -3842,7 +3842,7 @@ class QuantumCircuit:
         control_qubits: Sequence[QubitSpecifier],
         target_qubit: QubitSpecifier,
         ancilla_qubits: Optional[Union[QubitSpecifier, Sequence[QubitSpecifier]]] = None,
-        mode: str = "noancilla",
+        mode: str = "noancilla-root",
     ) -> InstructionSet:
         """Apply :class:`~qiskit.circuit.library.MCXGate`.
 
@@ -3850,6 +3850,7 @@ class QuantumCircuit:
         of ancilla qubits and have varying circuit depth. These modes are:
 
         - 'noancilla': Requires 0 ancilla qubits.
+        - 'noancilla-root': Requires 0 ancilla qubits.
         - 'recursion': Requires 1 ancilla qubit if more than 4 controls are used, otherwise 0.
         - 'v-chain': Requires 2 less ancillas than the number of control qubits.
         - 'v-chain-dirty': Same as for the clean ancillas (but the circuit will be longer).
@@ -3874,8 +3875,8 @@ class QuantumCircuit:
         num_ctrl_qubits = len(control_qubits)
 
         available_implementations = {
-            "noancilla": MCXNoAncilla(num_ctrl_qubits),
-            "noancilla-gray": MCXGrayCode(num_ctrl_qubits),
+            "noancilla-root": MCXNoAncilla(num_ctrl_qubits),
+            "noancilla": MCXGrayCode(num_ctrl_qubits),
             "recursion": MCXRecursive(num_ctrl_qubits),
             "v-chain": MCXVChain(num_ctrl_qubits, False),
             "v-chain-dirty": MCXVChain(num_ctrl_qubits, dirty_ancillas=True),

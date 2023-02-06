@@ -7,9 +7,9 @@ from qiskit.circuit.library.generalized_gates import multiconrol_single_qubit_ga
 from qiskit.circuit.library.standard_gates import XGate, YGate, ZGate
 
 I = eye(2)
-Z = ZGate().__array__() #array([[1, 0], [0, -1]])
-X = XGate().__array__() # array([[0, 1], [1, 0]])
-Y = YGate().__array__() #array([[0.0 + 0.0j, 0.0 - 1.0j], [0.0 + 1.0j, 0.0 + 0.0j]])
+Z = ZGate().__array__()  # array([[1, 0], [0, -1]])
+X = XGate().__array__()  # array([[0, 1], [1, 0]])
+Y = YGate().__array__()  # array([[0.0 + 0.0j, 0.0 - 1.0j], [0.0 + 1.0j, 0.0 + 0.0j]])
 
 
 def mcrx(
@@ -100,12 +100,12 @@ def mcry(
     else:
         Ry_gate = cos(theta / 2) * I - 1j * sin(theta / 2) * Y
         ncRy = multiconrol_single_qubit_gate(Ry_gate, contrl_qubits, targ_qubit)
-    
+
     # if use_basis_gates:
     #     ncRy = transpile(ncRy, basis_gates=['cx','u', 'p'])
 
     ncRy.name = f"MC-Ry({theta:0.3f})"
-    self.append(ncRy,[*control_qubits, q_target])
+    self.append(ncRy, [*control_qubits, q_target])
 
 
 def mcrz(
@@ -146,13 +146,12 @@ def mcrz(
     else:
         Rz_gate = cos(lam / 2) * I - 1j * sin(lam / 2) * Z
         ncRz = multiconrol_single_qubit_gate(Rz_gate, contrl_qubits, targ_qubit)
-        
+
     # if use_basis_gates:
     #     ncRz = transpile(ncRz, basis_gates=['cx','u', 'p'])
 
     ncRz.name = f"MC-Rz({lam:0.3f})"
     self.append(ncRz, [*control_qubits, q_target])
-
 
 
 QuantumCircuit.mcrx = mcrx
