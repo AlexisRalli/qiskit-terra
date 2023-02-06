@@ -207,7 +207,7 @@ def control(
                 controlled_circ.h(q_target[bit_indices[qargs[0]]])
             else:
                 raise CircuitError(f"gate contains non-controllable instructions: {gate.name}")
-            if gate.definition is not None and gate.definition.global_phase:
+            if gate.definition is not None and gate.definition.global_phase and gate.name is not "rz":
                 global_phase += gate.definition.global_phase
     # apply controlled global phase
     if global_phase:

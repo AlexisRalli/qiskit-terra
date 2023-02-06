@@ -1005,6 +1005,68 @@ class MCXGate(ControlledGate):
         return super().control(num_ctrl_qubits, label=label, ctrl_state=ctrl_state)
 
 
+class MCXNoAncilla(MCXGate):
+    r"""Implement the multi-controlled X gate using roots of X gate.
+
+    This delegates the implementation to multiconrol_single_qubit_gate.
+    """
+
+    def __new__(
+        cls,
+        num_ctrl_qubits: Optional[int] = None,
+        label: Optional[str] = None,
+        ctrl_state: Optional[Union[str, int]] = None,
+    ):
+        """Create a new MCXGrayCode instance"""
+        # if 1 to 4 control qubits, create explicit gates
+        explicit = {1: CXGate, 2: CCXGate, 3: C3XGate}
+        if num_ctrl_qubits in explicit:
+            gate_class = explicit[num_ctrl_qubits]
+            gate = gate_class.__new__(gate_class, label=label, ctrl_state=ctrl_state)
+            # if __new__ does not return the same type as cls, init is not called
+            gate.__init__(label=label, ctrl_state=ctrl_state)
+            return gate
+        return super().__new__(cls)
+
+    def __init__(
+        self,
+        num_ctrl_qubits: int,
+        label: Optional[str] = None,
+        ctrl_state: Optional[Union[str, int]] = None,
+    ):
+        super().__init__(num_ctrl_qubits, label=label, ctrl_state=ctrl_state, _name="mcx_gray")
+
+    def inverse(self):
+        """Invert this gate. The MCX is its own inverse."""
+        return MCXNoAncilla(num_ctrl_qubits=self.num_ctrl_qubits, ctrl_state=self.ctrl_state)
+
+    def _define(self):
+        """Define the multiconrol_single_qubit_gate gate."""
+        # pylint: disable=cyclic-import
+        from qiskit.circuit.quantumcircuit import QuantumCircuit
+        from qiskit.circuit.library.generalized_gates import multiconrol_single_qubit_gate
+
+        q = QuantumRegister(self.num_qubits, name="q")
+
+        if (self.num_qubits-1)<6:
+            qc = QuantumCircuit(q, name=self.name)
+            diag_circuit = QuantumCircuit(q)
+            diag = [1]*(2**self.num_qubits)
+            diag[-1]=-1
+            diag_circuit.H(q[-1])
+            diag_circuit.diagonal(diag, q)
+            diag_circuit.H(q[-1])
+            mc_X_gate = diag_circuit.to_gate()
+            qc._append(mc_X_gate, q)
+        else:
+            qc = multiconrol_single_qubit_gate(XGate().__array__(), 
+                                    list(range(self.num_qubits-1)), 
+                                    self.num_qubits-1)
+            qc.name = self.name
+
+        self.definition = qc
+
+
 class MCXGrayCode(MCXGate):
     r"""Implement the multi-controlled X gate using the Gray code.
 
