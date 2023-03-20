@@ -187,6 +187,8 @@ def mcrx(
     theta: ParameterValueType,
     q_controls: Union[QuantumRegister, List[Qubit]],
     q_target: Qubit,
+    q_ancillae: Optional[Union[QuantumRegister, Tuple[QuantumRegister, int]]] = None,
+    mode: str = None,
     use_basis_gates: bool = False,
 ):
     """
@@ -197,28 +199,51 @@ def mcrx(
         theta (float): angle theta
         q_controls (QuantumRegister or list(Qubit)): The list of control qubits
         q_target (Qubit): The target qubit
+        q_ancillae (QuantumRegister or tuple(QuantumRegister, int)): The list of ancillary qubits.
+        mode (string): The implementation mode to use
         use_basis_gates (bool): use p, u, cx
 
     Raises:
         QiskitError: parameter errors
     """
-    from .rx import RXGate
-
     control_qubits = self.qbit_argument_conversion(q_controls)
     target_qubit = self.qbit_argument_conversion(q_target)
     if len(target_qubit) != 1:
         raise QiskitError("The mcrz gate needs a single qubit as target.")
-    all_qubits = control_qubits + target_qubit
+    ancillary_qubits = [] if q_ancillae is None else self.qbit_argument_conversion(q_ancillae)
+    all_qubits = control_qubits + target_qubit + ancillary_qubits
     target_qubit = target_qubit[0]
     self._check_dups(all_qubits)
 
-    n_c = len(control_qubits)
-    rot_gate = ControlRotationGate(theta,
-                               n_c,
-                               'x',
-                               ctrl_state=None)
-    self.append(rot_gate, [*q_controls, target_qubit])
+    # auto-select the best mode
+    if mode is None:
+        # if enough ancillary qubits are provided, use the 'v-chain' method
+        additional_vchain = MCXGate.get_num_ancilla_qubits(len(control_qubits), "v-chain")
+        if len(ancillary_qubits) >= additional_vchain:
+            mode = "basic"
+        else:
+            mode = "noancilla"
 
+    if mode == "basic":
+        self.rx(theta / 2, q_target)
+
+        self.h(q_target)
+        self.mcx(q_controls, q_target, ancillary_qubits, mode="v-chain")
+        self.h(q_target)
+
+        self.rx(-theta / 2, q_target)
+
+        self.h(q_target)
+        self.mcx(q_controls, q_target, ancillary_qubits, mode="v-chain")
+        self.h(q_target)
+    elif mode == "noancilla":
+        n_c = len(control_qubits)
+        rot_gate = ControlRotationGate(
+            theta, n_c, "x", ctrl_state=None, use_basis_gates=use_basis_gates
+        )
+        self.append(rot_gate, [*q_controls, target_qubit])
+    else:
+        raise QiskitError(f"Unrecognized mode for building MCRY circuit: {mode}.")
 
 
 def mcry(
@@ -245,8 +270,6 @@ def mcry(
     Raises:
         QiskitError: parameter errors
     """
-    from .ry import RYGate
-
     control_qubits = self.qbit_argument_conversion(q_controls)
     target_qubit = self.qbit_argument_conversion(q_target)
     if len(target_qubit) != 1:
@@ -267,15 +290,14 @@ def mcry(
 
     if mode == "basic":
         self.ry(theta / 2, q_target)
-        self.mcx(q_controls, q_target, q_ancillae, mode="v-chain")
+        self.mcx(q_controls, q_target, ancillary_qubits, mode="v-chain")
         self.ry(-theta / 2, q_target)
-        self.mcx(q_controls, q_target, q_ancillae, mode="v-chain")
+        self.mcx(q_controls, q_target, ancillary_qubits, mode="v-chain")
     elif mode == "noancilla":
         n_c = len(control_qubits)
-        rot_gate = ControlRotationGate(theta,
-                                       n_c,
-                                       'y',
-                                       ctrl_state=None)
+        rot_gate = ControlRotationGate(
+            theta, n_c, "y", ctrl_state=None, use_basis_gates=use_basis_gates
+        )
         self.append(rot_gate, [*q_controls, target_qubit])
     else:
         raise QiskitError(f"Unrecognized mode for building MCRY circuit: {mode}.")
@@ -331,6 +353,7 @@ class ControlRotationGate(ControlledGate):
         num_ctrl_qubits: int,
         axis: str,
         ctrl_state: Optional[Union[str, int]] = None,
+        use_basis_gates: bool = False,
     ):
         """
         Multicontrol single qubit Pauli rotation gate.
@@ -343,6 +366,7 @@ class ControlRotationGate(ControlledGate):
             ctrl_list (list): list of control qubit indices
             target (int): index of target qubit
             axis (str): x,y,z axis
+            use_basis_gates (bool): use p, u, cx
 
         """
 
@@ -350,6 +374,7 @@ class ControlRotationGate(ControlledGate):
 
         self.axis = axis
         self.angle = angle
+        self.use_basis_gates = use_basis_gates
 
         if self.axis == "x":
             self.base_gate = RXGate(angle)
@@ -365,7 +390,6 @@ class ControlRotationGate(ControlledGate):
         cntrl_str = np.binary_repr(cntrl_int, width=self.num_ctrl_qubits)
         self.ctrl_state = cntrl_str[::-1]
 
-
         self.label = self.base_gate.label
         super().__init__(
             name=self.label,
@@ -378,51 +402,73 @@ class ControlRotationGate(ControlledGate):
 
     def _define(self):
         """
-        define gate via a circuit decomposition
+        define gate by a circuit decomposition
         """
         cntrl_int = _ctrl_state_to_int(self.ctrl_state, self.num_ctrl_qubits)
-        self.definition = QuantumCircuit(self.num_ctrl_qubits+1)
+        self.definition = QuantumCircuit(self.num_ctrl_qubits + 1)
 
-        if self.num_ctrl_qubits<6:
+        if self.num_ctrl_qubits < 6:
 
-            angle_list = [0] * 2**(self.num_ctrl_qubits)
+            angle_list = [0] * 2 ** (self.num_ctrl_qubits)
             angle_list[cntrl_int] = self.angle
 
             if self.axis == "x":
-                self.definition.ucrx(angle_list,
-                            list(range(self.num_ctrl_qubits)),
-                            self.num_ctrl_qubits)
+                self.definition.ucrx(
+                    angle_list, list(range(self.num_ctrl_qubits)), self.num_ctrl_qubits
+                )
             elif self.axis == "y":
-                self.definition.ucry(angle_list,
-                                     list(range(self.num_ctrl_qubits)),
-                                     self.num_ctrl_qubits)
+                self.definition.ucry(
+                    angle_list, list(range(self.num_ctrl_qubits)), self.num_ctrl_qubits
+                )
             elif self.axis == "z":
-                self.definition.ucrz(angle_list,
-                                     list(range(self.num_ctrl_qubits)),
-                                     self.num_ctrl_qubits)
-                raise NotImplementedError()
+                self.definition.ucrz(
+                    angle_list, list(range(self.num_ctrl_qubits)), self.num_ctrl_qubits
+                )
         else:
             if self.axis == "x":
-                mcsu2_real_diagonal(self.definition,
-                                      RXGate(self.angle).to_matrix(),
-                                      list(range(self.num_ctrl_qubits)),
-                                      self.num_ctrl_qubits,
-                                    ctrl_state=self.ctrl_state)
+                mcsu2_real_diagonal(
+                    self.definition,
+                    RXGate(self.angle).to_matrix(),
+                    list(range(self.num_ctrl_qubits)),
+                    self.num_ctrl_qubits,
+                    ctrl_state=self.ctrl_state,
+                )
             elif self.axis == "y":
-                mcsu2_real_diagonal(self.definition,
-                                    RYGate(self.angle).to_matrix(),
-                                    list(range(self.num_ctrl_qubits)),
-                                    self.num_ctrl_qubits,
-                                    ctrl_state=self.ctrl_state)
+                mcsu2_real_diagonal(
+                    self.definition,
+                    RYGate(self.angle).to_matrix(),
+                    list(range(self.num_ctrl_qubits)),
+                    self.num_ctrl_qubits,
+                    ctrl_state=self.ctrl_state,
+                )
             elif self.axis == "z":
-                raise NotImplementedError()
+                mcsu2_real_diagonal(
+                    self.definition,
+                    RZGate(self.angle).to_matrix(),
+                    list(range(self.num_ctrl_qubits)),
+                    self.num_ctrl_qubits,
+                    ctrl_state=self.ctrl_state,
+                )
+
+        if self.use_basis_gates:
+            # unroll into basis gates
+            from qiskit.transpiler.passes import Unroller
+            from qiskit.transpiler import PassManager
+
+            pass_ = Unroller(["p", "u", "cx"])
+            pm = PassManager(pass_)
+            self.definition = pm.run(self.definition)
 
     def inverse(self):
         """
         Returns inverse rotation gate
         """
         return ControlRotationGate(
-            -1 * self.angle, self.num_ctrl_qubits, self.axis, ctrl_state=self.ctrl_state
+            -1 * self.angle,
+            self.num_ctrl_qubits,
+            self.axis,
+            ctrl_state=self.ctrl_state,
+            use_basis_gates=self.use_basis_gates,
         )
 
     def __array__(self, dtype=None):
@@ -440,4 +486,3 @@ class ControlRotationGate(ControlledGate):
 QuantumCircuit.mcrx = mcrx
 QuantumCircuit.mcry = mcry
 QuantumCircuit.mcrz = mcrz
-
