@@ -20,8 +20,11 @@ import numpy as np
 from qiskit.circuit import QuantumCircuit, QuantumRegister, Qubit
 from qiskit.circuit.library.standard_gates.x import MCXGate
 from qiskit.circuit.library.standard_gates.u3 import _generate_gray_code
+from qiskit.circuit.library.standard_gates import RXGate, RYGate, RZGate
 from qiskit.circuit.parameterexpression import ParameterValueType
 from qiskit.exceptions import QiskitError
+from qiskit.circuit._utils import _ctrl_state_to_int, _compute_control_matrix
+from qiskit.circuit.controlledgate import ControlledGate
 
 
 def _apply_cu(circuit, theta, phi, lam, control, target, use_basis_gates=True):
@@ -210,29 +213,12 @@ def mcrx(
     self._check_dups(all_qubits)
 
     n_c = len(control_qubits)
-    if n_c == 1:  # cu
-        _apply_cu(
-            self,
-            theta,
-            -pi / 2,
-            pi / 2,
-            control_qubits[0],
-            target_qubit,
-            use_basis_gates=use_basis_gates,
-        )
-    elif n_c < 4:
-        theta_step = theta * (1 / (2 ** (n_c - 1)))
-        _apply_mcu_graycode(
-            self,
-            theta_step,
-            -pi / 2,
-            pi / 2,
-            control_qubits,
-            target_qubit,
-            use_basis_gates=use_basis_gates,
-        )
-    else:
-        mcsu2_real_diagonal(self, RXGate(theta).to_matrix(), control_qubits, target_qubit)
+    rot_gate = ControlRotationGate(theta,
+                               n_c,
+                               'x',
+                               ctrl_state=None)
+    self.append(rot_gate, [*q_controls, target_qubit])
+
 
 
 def mcry(
@@ -286,23 +272,11 @@ def mcry(
         self.mcx(q_controls, q_target, q_ancillae, mode="v-chain")
     elif mode == "noancilla":
         n_c = len(control_qubits)
-        if n_c == 1:  # cu
-            _apply_cu(
-                self, theta, 0, 0, control_qubits[0], target_qubit, use_basis_gates=use_basis_gates
-            )
-        elif n_c < 4:
-            theta_step = theta * (1 / (2 ** (n_c - 1)))
-            _apply_mcu_graycode(
-                self,
-                theta_step,
-                0,
-                0,
-                control_qubits,
-                target_qubit,
-                use_basis_gates=use_basis_gates,
-            )
-        else:
-            mcsu2_real_diagonal(self, RYGate(theta).to_matrix(), control_qubits, target_qubit)
+        rot_gate = ControlRotationGate(theta,
+                                       n_c,
+                                       'y',
+                                       ctrl_state=None)
+        self.append(rot_gate, [*q_controls, target_qubit])
     else:
         raise QiskitError(f"Unrecognized mode for building MCRY circuit: {mode}.")
 
@@ -345,6 +319,125 @@ def mcrz(
         )
 
 
+class ControlRotationGate(ControlledGate):
+    """
+    Multicontrol single qubit Pauli rotation gate.
+
+    """
+
+    def __init__(
+        self,
+        angle: ParameterValueType,
+        num_ctrl_qubits: int,
+        axis: str,
+        ctrl_state: Optional[Union[str, int]] = None,
+    ):
+        """
+        Multicontrol single qubit Pauli rotation gate.
+
+        6 controls and below uses quantum multiplexors: see Theorem 8 of https://arxiv.org/pdf/quant-ph/0406176.pdf
+        above 6 qubits the decomposition uses multi-controlled SU(2) strategy given in https://arxiv.org/abs/2302.06377
+
+        Args:
+            angle (float): angle of rotation
+            ctrl_list (list): list of control qubit indices
+            target (int): index of target qubit
+            axis (str): x,y,z axis
+
+        """
+
+        assert axis in ["x", "y", "z"], f"can only rotated around x,y,z axis, not {axis}"
+
+        self.axis = axis
+        self.angle = angle
+
+        if self.axis == "x":
+            self.base_gate = RXGate(angle)
+        elif self.axis == "y":
+            self.base_gate = RYGate(angle)
+        elif self.axis == "z":
+            self.base_gate = RZGate(angle)
+
+        self._num_qubits = num_ctrl_qubits + 1
+        self.num_ctrl_qubits = num_ctrl_qubits
+
+        cntrl_int = _ctrl_state_to_int(ctrl_state, self.num_ctrl_qubits)
+        cntrl_str = np.binary_repr(cntrl_int, width=self.num_ctrl_qubits)
+        self.ctrl_state = cntrl_str[::-1]
+
+
+        self.label = self.base_gate.label
+        super().__init__(
+            name=self.label,
+            num_qubits=self._num_qubits,
+            params=[angle],
+            num_ctrl_qubits=self.num_ctrl_qubits,
+            ctrl_state=self.ctrl_state,
+            base_gate=self.base_gate,
+        )
+
+    def _define(self):
+        """
+        define gate via a circuit decomposition
+        """
+        cntrl_int = _ctrl_state_to_int(self.ctrl_state, self.num_ctrl_qubits)
+        self.definition = QuantumCircuit(self.num_ctrl_qubits+1)
+
+        if self.num_ctrl_qubits<6:
+
+            angle_list = [0] * 2**(self.num_ctrl_qubits)
+            angle_list[cntrl_int] = self.angle
+
+            if self.axis == "x":
+                self.definition.ucrx(angle_list,
+                            list(range(self.num_ctrl_qubits)),
+                            self.num_ctrl_qubits)
+            elif self.axis == "y":
+                self.definition.ucry(angle_list,
+                                     list(range(self.num_ctrl_qubits)),
+                                     self.num_ctrl_qubits)
+            elif self.axis == "z":
+                self.definition.ucrz(angle_list,
+                                     list(range(self.num_ctrl_qubits)),
+                                     self.num_ctrl_qubits)
+                raise NotImplementedError()
+        else:
+            if self.axis == "x":
+                mcsu2_real_diagonal(self.definition,
+                                      RXGate(self.angle).to_matrix(),
+                                      list(range(self.num_ctrl_qubits)),
+                                      self.num_ctrl_qubits,
+                                    ctrl_state=self.ctrl_state)
+            elif self.axis == "y":
+                mcsu2_real_diagonal(self.definition,
+                                    RYGate(self.angle).to_matrix(),
+                                    list(range(self.num_ctrl_qubits)),
+                                    self.num_ctrl_qubits,
+                                    ctrl_state=self.ctrl_state)
+            elif self.axis == "z":
+                raise NotImplementedError()
+
+    def inverse(self):
+        """
+        Returns inverse rotation gate
+        """
+        return ControlRotationGate(
+            -1 * self.angle, self.num_ctrl_qubits, self.axis, ctrl_state=self.ctrl_state
+        )
+
+    def __array__(self, dtype=None):
+        """
+        Return numpy array for gate
+        """
+        mat = _compute_control_matrix(
+            self.base_gate.to_matrix(), self.num_ctrl_qubits, ctrl_state=self.ctrl_state
+        )
+        if dtype:
+            mat = np.asarray(mat, dtype=dtype)
+        return mat
+
+
 QuantumCircuit.mcrx = mcrx
 QuantumCircuit.mcry = mcry
 QuantumCircuit.mcrz = mcrz
+
